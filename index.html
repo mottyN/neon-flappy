@@ -35,23 +35,11 @@
     touch-action: none;
     cursor: pointer;
   }
-  #hint {
-    position: absolute;
-    bottom: 24px;
-    left: 0;
-    width: 100%;
-    text-align: center;
-    color: rgba(0, 255, 200, 0.55);
-    font-size: 14px;
-    letter-spacing: 1px;
-    pointer-events: none;
-  }
 </style>
 </head>
 <body>
   <div id="wrap">
     <canvas id="game" width="360" height="640"></canvas>
-    <div id="hint">לחיצה / רווח כדי לעוף</div>
   </div>
 
 <script>
@@ -62,60 +50,97 @@ const W = cv.width, H = cv.height;
 const STATE = { READY: 0, PLAY: 1, DEAD: 2 };
 let state = STATE.READY;
 
-let best = +(localStorage.getItem('neonFlappyBest') || 0);
-let score = 0;
+// ===== דרגות קושי (אינדקס 2 = "דרגה 3" = המצב המקורי) =====
+const DIFFS = [
+  { name: 'קל מאוד', gap: 220, speed: 1.8, spacing: 285, gravity: 0.38, flap: -7.0 },
+  { name: 'קל',      gap: 195, speed: 2.2, spacing: 255, gravity: 0.42, flap: -7.3 },
+  { name: 'רגיל',    gap: 165, speed: 2.6, spacing: 230, gravity: 0.45, flap: -7.6 },
+  { name: 'קשה',     gap: 140, speed: 3.1, spacing: 205, gravity: 0.49, flap: -7.9 },
+  { name: 'אכזרי',   gap: 118, speed: 3.6, spacing: 185, gravity: 0.53, flap: -8.2 },
+];
+let diffIdx = +(localStorage.getItem('neonFlappyDiff') ?? 2);
 
-const GRAVITY = 0.45;
-const FLAP = -7.6;
-const PIPE_GAP = 165;
 const PIPE_W = 62;
-const PIPE_SPACING = 230;
-const SPEED = 2.6;
+const POINTS_PER_LEVEL = 5;   // כל 5 נקודות = שלב חדש
+
+let score = 0;
+let level = 1;
+let levelFlash = 0;
+let bestMap = JSON.parse(localStorage.getItem('neonFlappyBest') || '{}');
 
 const bird = { x: 100, y: H / 2, r: 14, vy: 0, rot: 0 };
 let pipes = [];
 let frame = 0;
 let stars = [];
 
-// רקע כוכבים
 for (let i = 0; i < 60; i++) {
-  stars.push({
-    x: Math.random() * W,
-    y: Math.random() * H,
-    z: Math.random() * 0.8 + 0.2
-  });
+  stars.push({ x: Math.random() * W, y: Math.random() * H, z: Math.random() * 0.8 + 0.2 });
 }
 
+// ===== פרמטרים אפקטיביים לפי דרגה + שלב =====
+function cfg() { return DIFFS[diffIdx]; }
+function effSpeed() { return cfg().speed + (level - 1) * 0.32; }
+function effGap()   { return Math.max(105, cfg().gap - (level - 1) * 5); }
+function effSpacing(){ return Math.max(165, cfg().spacing - (level - 1) * 4); }
+function pipeHue()  { return (115 + (level - 1) * 28) % 360; }
+
 function reset() {
-  bird.y = H / 2;
-  bird.vy = 0;
-  bird.rot = 0;
-  pipes = [];
-  score = 0;
-  frame = 0;
-  spawnPipe(W + 80);
-  spawnPipe(W + 80 + PIPE_SPACING);
-  spawnPipe(W + 80 + PIPE_SPACING * 2);
+  bird.y = H / 2; bird.vy = 0; bird.rot = 0;
+  pipes = []; score = 0; level = 1; levelFlash = 0; frame = 0;
+  let x = W + 80;
+  for (let i = 0; i < 4; i++) { spawnPipe(x); x += cfg().spacing; }
 }
 
 function spawnPipe(x) {
-  const margin = 70;
-  const gapY = margin + Math.random() * (H - PIPE_GAP - margin * 2);
-  pipes.push({ x, gapY, passed: false });
+  const margin = 70, gap = effGap();
+  const gapY = margin + Math.random() * (H - gap - margin * 2);
+  pipes.push({ x, gapY, gap, passed: false });
 }
+
+function startGame() { reset(); state = STATE.PLAY; }
 
 function flap() {
-  if (state === STATE.READY) { state = STATE.PLAY; reset(); state = STATE.PLAY; }
-  if (state === STATE.PLAY) { bird.vy = FLAP; }
-  if (state === STATE.DEAD) { state = STATE.READY; }
+  if (state === STATE.READY) startGame();
+  else if (state === STATE.PLAY) bird.vy = cfg().flap;
+  else if (state === STATE.DEAD) state = STATE.READY;
 }
 
-// קלט
+// ===== קלט מקלדת =====
 window.addEventListener('keydown', e => {
   if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); flap(); }
+  if (state === STATE.READY) {
+    if (e.code === 'ArrowLeft')  { diffIdx = Math.min(DIFFS.length - 1, diffIdx + 1); saveDiff(); }
+    if (e.code === 'ArrowRight') { diffIdx = Math.max(0, diffIdx - 1); saveDiff(); }
+    if (e.key >= '1' && e.key <= '5') { diffIdx = +e.key - 1; saveDiff(); }
+  }
 });
-cv.addEventListener('mousedown', flap);
-cv.addEventListener('touchstart', e => { e.preventDefault(); flap(); }, { passive: false });
+function saveDiff() { localStorage.setItem('neonFlappyDiff', diffIdx); }
+
+// ===== קלט עכבר/מגע (עם המרת קואורדינטות) =====
+function pointerPos(e) {
+  const rect = cv.getBoundingClientRect();
+  const src = e.touches ? e.touches[0] : e;
+  return { x: (src.clientX - rect.left) * (W / rect.width),
+           y: (src.clientY - rect.top) * (H / rect.height) };
+}
+
+// מיקומי כפתורי הדרגות במסך הפתיחה
+const DIFF_BTN = { y: 312, r: 24, x0: 64, dx: 58 };
+function diffBtnX(i) { return DIFF_BTN.x0 + i * DIFF_BTN.dx; }
+
+function handlePointer(p) {
+  if (state === STATE.READY) {
+    // לחיצה על כפתור דרגה?
+    for (let i = 0; i < DIFFS.length; i++) {
+      const dx = p.x - diffBtnX(i), dy = p.y - DIFF_BTN.y;
+      if (dx * dx + dy * dy <= (DIFF_BTN.r + 4) ** 2) { diffIdx = i; saveDiff(); return; }
+    }
+    startGame();
+  } else flap();
+}
+
+cv.addEventListener('mousedown', e => handlePointer(pointerPos(e)));
+cv.addEventListener('touchstart', e => { e.preventDefault(); handlePointer(pointerPos(e)); }, { passive: false });
 
 function circleRectHit(cx, cy, r, rx, ry, rw, rh) {
   const nx = Math.max(rx, Math.min(cx, rx + rw));
@@ -126,56 +151,53 @@ function circleRectHit(cx, cy, r, rx, ry, rw, rh) {
 
 function update() {
   frame++;
+  if (levelFlash > 0) levelFlash--;
 
-  // כוכבים נעים
   for (const s of stars) {
-    s.x -= s.z * 0.6;
+    s.x -= s.z * (0.6 + (state === STATE.PLAY ? effSpeed() * 0.15 : 0));
     if (s.x < 0) { s.x = W; s.y = Math.random() * H; }
   }
 
   if (state !== STATE.PLAY) {
-    // ריחוף עדין במסך פתיחה
     bird.y = H / 2 + Math.sin(frame / 22) * 14;
     return;
   }
 
-  bird.vy += GRAVITY;
+  const sp = effSpeed();
+  bird.vy += cfg().gravity;
   bird.y += bird.vy;
   bird.rot = Math.max(-0.5, Math.min(1.2, bird.vy / 12));
 
   for (const p of pipes) {
-    p.x -= SPEED;
+    p.x -= sp;
     if (!p.passed && p.x + PIPE_W < bird.x) {
       p.passed = true;
       score++;
+      const newLevel = 1 + Math.floor(score / POINTS_PER_LEVEL);
+      if (newLevel > level) { level = newLevel; levelFlash = 70; }
     }
   }
 
   if (pipes.length && pipes[0].x < -PIPE_W) {
     pipes.shift();
-    const lastX = pipes[pipes.length - 1].x;
-    spawnPipe(lastX + PIPE_SPACING);
+    spawnPipe(pipes[pipes.length - 1].x + effSpacing());
   }
 
-  // התנגשות
   for (const p of pipes) {
     if (circleRectHit(bird.x, bird.y, bird.r, p.x, 0, PIPE_W, p.gapY) ||
-        circleRectHit(bird.x, bird.y, bird.r, p.x, p.gapY + PIPE_GAP, PIPE_W, H - p.gapY - PIPE_GAP)) {
+        circleRectHit(bird.x, bird.y, bird.r, p.x, p.gapY + p.gap, PIPE_W, H - p.gapY - p.gap)) {
       die();
     }
   }
-
-  if (bird.y + bird.r > H - 4 || bird.y - bird.r < 0) {
-    die();
-  }
+  if (bird.y + bird.r > H - 4 || bird.y - bird.r < 0) die();
 }
 
 function die() {
   if (state === STATE.DEAD) return;
   state = STATE.DEAD;
-  if (score > best) {
-    best = score;
-    localStorage.setItem('neonFlappyBest', best);
+  if (score > (bestMap[diffIdx] || 0)) {
+    bestMap[diffIdx] = score;
+    localStorage.setItem('neonFlappyBest', JSON.stringify(bestMap));
   }
 }
 
@@ -191,18 +213,15 @@ function roundRect(x, y, w, h, r) {
 
 function drawPipe(p) {
   ctx.save();
-  ctx.shadowColor = 'rgba(0,255,180,0.7)';
+  const hue = pipeHue();
+  ctx.shadowColor = `hsla(${hue},100%,55%,0.7)`;
   ctx.shadowBlur = 18;
   const grad = ctx.createLinearGradient(p.x, 0, p.x + PIPE_W, 0);
-  grad.addColorStop(0, '#0fffc1');
-  grad.addColorStop(1, '#0a9d7a');
+  grad.addColorStop(0, `hsl(${hue},100%,60%)`);
+  grad.addColorStop(1, `hsl(${hue},80%,38%)`);
   ctx.fillStyle = grad;
-  // עליון
-  roundRect(p.x, -10, PIPE_W, p.gapY + 10, 10);
-  ctx.fill();
-  // תחתון
-  roundRect(p.x, p.gapY + PIPE_GAP, PIPE_W, H - p.gapY - PIPE_GAP + 10, 10);
-  ctx.fill();
+  roundRect(p.x, -10, PIPE_W, p.gapY + 10, 10); ctx.fill();
+  roundRect(p.x, p.gapY + p.gap, PIPE_W, H - p.gapY - p.gap + 10, 10); ctx.fill();
   ctx.restore();
 }
 
@@ -212,34 +231,21 @@ function drawBird() {
   ctx.rotate(bird.rot);
   ctx.shadowColor = 'rgba(255,210,0,0.9)';
   ctx.shadowBlur = 22;
-  // גוף
   const g = ctx.createRadialGradient(-4, -4, 2, 0, 0, bird.r + 4);
-  g.addColorStop(0, '#fff4b0');
-  g.addColorStop(1, '#ffb300');
+  g.addColorStop(0, '#fff4b0'); g.addColorStop(1, '#ffb300');
   ctx.fillStyle = g;
-  ctx.beginPath();
-  ctx.arc(0, 0, bird.r, 0, Math.PI * 2);
-  ctx.fill();
-  // כנף
+  ctx.beginPath(); ctx.arc(0, 0, bird.r, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#ff8c00';
   ctx.beginPath();
   const wf = Math.sin(frame / 5) * 4;
-  ctx.ellipse(-2, 2 + wf, 8, 5, -0.3, 0, Math.PI * 2);
-  ctx.fill();
-  // עין
+  ctx.ellipse(-2, 2 + wf, 8, 5, -0.3, 0, Math.PI * 2); ctx.fill();
   ctx.shadowBlur = 0;
-  ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.arc(6, -5, 4, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#111';
-  ctx.beginPath(); ctx.arc(7.5, -5, 2, 0, Math.PI * 2); ctx.fill();
-  // מקור
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(6, -5, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(7.5, -5, 2, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#ff5722';
   ctx.beginPath();
-  ctx.moveTo(bird.r - 2, -2);
-  ctx.lineTo(bird.r + 7, 0);
-  ctx.lineTo(bird.r - 2, 4);
-  ctx.closePath();
-  ctx.fill();
+  ctx.moveTo(bird.r - 2, -2); ctx.lineTo(bird.r + 7, 0); ctx.lineTo(bird.r - 2, 4);
+  ctx.closePath(); ctx.fill();
   ctx.restore();
 }
 
@@ -252,50 +258,83 @@ function drawStars() {
   ctx.globalAlpha = 1;
 }
 
-function drawText(txt, y, size, color, glow) {
+function text(txt, y, size, color, glow, x) {
   ctx.save();
   ctx.textAlign = 'center';
   ctx.font = `bold ${size}px "Segoe UI", Arial`;
   ctx.shadowColor = glow || color;
   ctx.shadowBlur = 16;
   ctx.fillStyle = color;
-  ctx.fillText(txt, W / 2, y);
+  ctx.fillText(txt, x ?? W / 2, y);
   ctx.restore();
+}
+
+function drawDiffPicker() {
+  text('בחר דרגת קושי', 268, 22, 'rgba(255,255,255,0.75)');
+  for (let i = 0; i < DIFFS.length; i++) {
+    const x = diffBtnX(i), sel = i === diffIdx;
+    const hue = (115 + i * 32) % 360;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, DIFF_BTN.y, DIFF_BTN.r, 0, Math.PI * 2);
+    ctx.shadowColor = `hsla(${hue},100%,55%,${sel ? 0.95 : 0.35})`;
+    ctx.shadowBlur = sel ? 22 : 8;
+    ctx.fillStyle = sel ? `hsl(${hue},100%,55%)` : 'rgba(255,255,255,0.10)';
+    ctx.fill();
+    ctx.lineWidth = sel ? 3 : 1.5;
+    ctx.strokeStyle = sel ? '#fff' : `hsla(${hue},80%,60%,0.6)`;
+    ctx.stroke();
+    ctx.restore();
+    text(i + 1, DIFF_BTN.y + 7, 20, sel ? '#04101a' : '#fff', 'transparent', x);
+  }
+  text(DIFFS[diffIdx].name + ' · דרגה ' + (diffIdx + 1), 378, 24, '#0fffc1', null);
 }
 
 function render() {
   ctx.clearRect(0, 0, W, H);
   drawStars();
-
   for (const p of pipes) drawPipe(p);
   drawBird();
 
-  // ניקוד
   if (state === STATE.PLAY) {
-    drawText(score, 80, 54, '#fff', 'rgba(0,255,200,0.8)');
+    text(score, 78, 54, '#fff', 'rgba(0,255,200,0.8)');
+    text('שלב ' + level, 118, 22, '#0fffc1');
+    if (levelFlash > 0) {
+      ctx.globalAlpha = Math.min(1, levelFlash / 40);
+      text('שלב ' + level + '! ⚡', H / 2 - 60, 40, '#ffe14b', 'rgba(255,200,0,0.9)');
+      text('המהירות עולה', H / 2 - 22, 20, '#fff');
+      ctx.globalAlpha = 1;
+    }
   }
 
   if (state === STATE.READY) {
-    drawText('NEON FLAPPY', H / 2 - 120, 40, '#0fffc1');
-    drawText('שיא: ' + best, H / 2 - 78, 22, 'rgba(255,255,255,0.7)');
-    drawText('לחץ כדי להתחיל', H / 2 + 140, 24, '#fff');
+    text('NEON FLAPPY', 150, 40, '#0fffc1');
+    text('🐦', 205, 34, '#fff', 'transparent');
+    drawDiffPicker();
+    // כפתור התחל
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,255,200,0.6)'; ctx.shadowBlur = 18;
+    ctx.fillStyle = 'rgba(15,255,193,0.16)';
+    roundRect(W / 2 - 90, 430, 180, 54, 14); ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = '#0fffc1'; ctx.stroke();
+    ctx.restore();
+    text('▶  התחל', 465, 26, '#fff');
+    text('שיא בדרגה זו: ' + (bestMap[diffIdx] || 0), 540, 22, 'rgba(255,255,255,0.7)');
+    text('מקלדת: 1-5 / חיצים לבחירה · רווח לעוף', 590, 14, 'rgba(0,255,200,0.5)');
   }
 
   if (state === STATE.DEAD) {
     ctx.fillStyle = 'rgba(3,4,10,0.55)';
     ctx.fillRect(0, 0, W, H);
-    drawText('נפלת! 💥', H / 2 - 90, 44, '#ff4b6e');
-    drawText('ניקוד: ' + score, H / 2 - 30, 30, '#fff');
-    drawText('שיא: ' + best, H / 2 + 10, 26, '#0fffc1');
-    drawText('לחץ לשחק שוב', H / 2 + 120, 24, 'rgba(255,255,255,0.85)');
+    text('נפלת! 💥', H / 2 - 110, 44, '#ff4b6e');
+    text('ניקוד: ' + score, H / 2 - 50, 30, '#fff');
+    text('הגעת לשלב ' + level, H / 2 - 14, 22, '#0fffc1');
+    text('שיא: ' + (bestMap[diffIdx] || 0) + '  (' + DIFFS[diffIdx].name + ')', H / 2 + 24, 22, 'rgba(255,255,255,0.8)');
+    text('לחץ לשחק שוב', H / 2 + 110, 24, 'rgba(255,255,255,0.85)');
   }
 }
 
-function loop() {
-  update();
-  render();
-  requestAnimationFrame(loop);
-}
+function loop() { update(); render(); requestAnimationFrame(loop); }
 
 reset();
 state = STATE.READY;
